@@ -10,6 +10,10 @@ node_modules/
 .env.production.local
 .env*.local
 
+# Additional dotenv patterns
+.env.*
+.env.*.local
+
 # Logs
 logs
 *.log
@@ -27,6 +31,12 @@ lerna-debug.log*
 ehthumbs.db
 Thumbs.db
 
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
 # IDE
 .vscode/
 .idea/
@@ -39,6 +49,12 @@ build/
 dist/
 *.tsbuildinfo
 
+# Also ignore build/dist in subfolders
+**/build/
+**/dist/
+client/build/
+server/dist/
+
 # Testing
 coverage/
 .nyc_output/
@@ -46,4 +62,23 @@ coverage/
 # Misc
 *.pem
 .cache/
+
+# Logs and temp
+logs
+*.log
+tmp/
+temp/
+.cache/
+
+# Python
+venv/
+.venv/
+.python-version
+.pytest_cache/
+
+# Package manager caches
+.pnp.cjs
+.pnp.js
+.parcel-cache/
+
 
