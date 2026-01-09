@@ -15,20 +15,7 @@ A visualization tool that creates an interactive graph of your top Spotify artis
 - Spotify Developer Account
 - Spotify App credentials (Client ID and Client Secret)
 
-## Project Structure
-
-```
-spotify-genre-graph1/
-├── client/          # React frontend application
-├── server/          # Express backend server
-└── .gitignore       # Git ignore file (protects .env files)
-```
-
 ## Environment Variables Setup
-
-### Security Note
-
-**Never commit `.env` files to version control!** They contain sensitive credentials. The `.gitignore` file is configured to protect these files.
 
 ### Server Environment Variables
 
@@ -93,21 +80,6 @@ REACT_APP_API_URL=http://127.0.0.1:8888
 
 ```bash
 npm run install:all
-```
-
-Or install individually:
-
-```bash
-# Root dependencies (for running both server and client together)
-npm install
-
-# Server dependencies
-cd server
-npm install
-
-# Client dependencies
-cd ../client
-npm install
 ```
 
 ## Running the Application
@@ -188,29 +160,6 @@ serve -s build
 - `components/` - React components (LoginScreen, LoadingScreen, GenreChart)
 - `services/api.js` - API service layer
 - `utils/graphSetup.js` - Graph visualization utilities
-
-## Troubleshooting
-
-### "Missing required environment variables" error
-
-- Ensure `.env` file exists in the `server/` directory
-- Verify `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` are set correctly
-- Make sure there are no extra spaces or quotes around the values
-
-### "Invalid redirect URI" error
-
-- Ensure the redirect URI in your Spotify app settings matches exactly: `http://127.0.0.1:8888/callback`
-- Make sure you're using `127.0.0.1` not `localhost`
-
-### CORS errors
-
-- Verify `FRONTEND_URI` in server `.env` matches your client URL
-- Check that both server and client are running
-
-### Token errors
-
-- Tokens expire after 1 hour. Re-authenticate if you see 401 errors
-- Ensure you're using a valid Spotify account
 
 ## Technologies Used
 
