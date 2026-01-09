@@ -1,274 +1,223 @@
-const express = require("express");
-const request = require("request");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
-const querystring = require("querystring");
-require("dotenv").config();
+/**
+ * Spotify Genre Graph Server
+ * Express server for Spotify OAuth and API integration
+ */
+
+const express = require('express');
+const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const querystring = require('querystring');
+
+const config = require('./config');
+const constants = require('./constants');
+const { generateRandomState, validateState, STATE_COOKIE_NAME } = require('./utils/auth');
+const { exchangeCodeForTokens, getTopArtists } = require('./utils/spotify');
+const {
+  calculateGenreFrequency,
+  createArtistLinks,
+  filterLinks,
+  createGraphNodes,
+} = require('./utils/graph');
+
 const app = express();
 
+// Middleware
+app.use(cors({
+  origin: config.frontendUri,
+  credentials: true,
+}));
+app.use(cookieParser());
+app.use(express.json());
 
-app.use(cors()).use(cookieParser());
-
-// Use 127.0.0.1 instead of localhost to comply with Spotify's new security requirements
-const redirect_uri = process.env.REDIRECT_URI || "http://127.0.0.1:8888/callback";
-
-// --- LOGIN ROUTE ---
-// Redirect user to Spotify authorization page
-app.get("/login", (req, res) => {
-  const scope = [
-    "user-top-read" // necessary scope for top artists
-  ].join(" ");
-
-  // Generate a random state parameter for CSRF protection
-  const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-  
-  const authQueryParams = querystring.stringify({
-    response_type: "code",
-    client_id: process.env.SPOTIFY_CLIENT_ID,
-    scope: scope,
-    redirect_uri: redirect_uri,
-    state: state, // Add state parameter for security
+// Request logging middleware (development only)
+if (config.nodeEnv === 'development') {
+  app.use((req, res, next) => {
+    // Log request method and path in development
+    console.log(`${req.method} ${req.path}`);
+    next();
   });
+}
 
-  // Store state in session/cookie for verification (optional but recommended)
-  res.cookie('spotify_auth_state', state);
+/**
+ * Login route - Redirects user to Spotify authorization
+ */
+app.get('/login', (req, res) => {
+  try {
+    const scope = constants.SPOTIFY_SCOPES.join(' ');
+    const state = generateRandomState();
 
-  res.redirect(`https://accounts.spotify.com/authorize?${authQueryParams}`);
+    // Store state in cookie for verification
+    res.cookie(STATE_COOKIE_NAME, state, {
+      httpOnly: true,
+      secure: config.nodeEnv === 'production',
+      sameSite: 'lax',
+      maxAge: 600000, // 10 minutes
+    });
+
+    const authQueryParams = querystring.stringify({
+      response_type: 'code',
+      client_id: config.spotify.clientId,
+      scope,
+      redirect_uri: config.redirectUri,
+      state,
+    });
+
+    res.redirect(`${config.spotify.authUrl}?${authQueryParams}`);
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Failed to initiate login' });
+  }
 });
 
-// --- CALLBACK ROUTE ---
-// Spotify redirects here after login; exchange code for tokens
-app.get("/callback", (req, res) => {
-  const code = req.query.code || null;
-  const state = req.query.state || null;
-  const storedState = req.cookies ? req.cookies['spotify_auth_state'] : null;
+/**
+ * Callback route - Handles Spotify OAuth callback
+ */
+app.get('/callback', async (req, res) => {
+  try {
+    const code = req.query.code;
+    const receivedState = req.query.state;
+    const storedState = req.cookies[STATE_COOKIE_NAME];
 
-  if (!code) {
-    return res.status(400).json({ error: "Missing authorization code" });
-  }
-
-  // Verify state parameter to prevent CSRF attacks (optional but recommended)
-  if (state === null || state !== storedState) {
-    console.warn("State mismatch - possible CSRF attack");
-  }
-
-  // Clear the state cookie
-  res.clearCookie('spotify_auth_state');
-
-  const authOptions = {
-    url: "https://accounts.spotify.com/api/token",
-    form: {
-      code: code,
-      redirect_uri: redirect_uri,
-      grant_type: "authorization_code",
-    },
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization:
-        "Basic " +
-        Buffer.from(
-          process.env.SPOTIFY_CLIENT_ID + ":" + process.env.SPOTIFY_CLIENT_SECRET
-        ).toString("base64"),
-    },
-    json: true,
-  };
-
-  request.post(authOptions, (error, response, body) => {
-    if (error) {
-      console.error("Request error:", error);
-      return res.status(500).json({ error: "Network error occurred" });
+    if (!code) {
+      return res.status(400).json({ error: 'Missing authorization code' });
     }
 
-    if (response.statusCode !== 200) {
-      console.error("Spotify API error:", response.statusCode, body);
-      return res.status(response.statusCode).json({
-        error: body?.error_description || body?.error || "Failed to get access token",
-      });
+    // Verify state parameter to prevent CSRF attacks
+    if (!validateState(receivedState, storedState)) {
+      console.warn('State mismatch - possible CSRF attack');
+      res.clearCookie(STATE_COOKIE_NAME);
+      return res.status(403).json({ error: 'Invalid state parameter' });
     }
 
-    const access_token = body.access_token;
-    const refresh_token = body.refresh_token;
+    // Clear the state cookie
+    res.clearCookie(STATE_COOKIE_NAME);
 
-    if (!access_token) {
-      console.error("No access token received:", body);
-      return res.status(500).json({ error: "No access token received" });
+    // Exchange code for tokens
+    const tokenData = await exchangeCodeForTokens(code);
+
+    if (!tokenData.access_token) {
+      return res.status(500).json({ error: 'No access token received' });
     }
 
-    // Redirect back to frontend with tokens in URL hash fragment
-    // Use 127.0.0.1 instead of localhost for consistency
-    const frontendUrl = `http://127.0.0.1:3000/#access_token=${access_token}&refresh_token=${refresh_token}`;
+    // Redirect to frontend with tokens in URL hash fragment
+    const frontendUrl = `${config.frontendUri}/#access_token=${tokenData.access_token}&refresh_token=${tokenData.refresh_token || ''}`;
     res.redirect(frontendUrl);
-  });
+  } catch (error) {
+    console.error('Callback error:', error.message);
+    res.status(500).json({
+      error: 'Authentication failed',
+      message: error.message,
+    });
+  }
 });
 
-// --- TOP ARTISTS GRAPH ROUTE ---
-app.get("/top-artists-graph", (req, res) => {
-  const genreMap = {
-  pop: "Pop",
-  "dance pop": "Pop",
-  "pop rap": "Pop",
-  "electropop": "Pop",
-  rock: "Rock",
-  "alternative rock": "Rock",
-  "modern rock": "Rock",
-  "hard rock": "Rock",
-  "indie rock": "Indie",
-  "indie pop": "Indie",
-  "folk-pop": "Indie",
-  "folk rock": "Indie",
-  edm: "Electronic",
-  "electro house": "Electronic",
-  "progressive house": "Electronic",
-  "house": "Electronic",
-  techno: "Electronic",
-  trance: "Electronic",
-  hiphop: "Hip-Hop",
-  "hip hop": "Hip-Hop",
-  rap: "Hip-Hop",
-  "trap music": "Hip-Hop",
-  "southern hip hop": "Hip-Hop",
-  rnb: "R&B",
-  "r&b": "R&B",
-  "neo soul": "R&B",
-  soul: "R&B",
-  jazz: "Jazz",
-  "vocal jazz": "Jazz",
-  classical: "Classical",
-  "baroque": "Classical",
-  country: "Country",
-  "modern country rock": "Country",
-  "canadian country": "Country",
-  "k-pop": "K-Pop",
-  "j-pop": "J-Pop",
-  };
-  // AI-generated genre map for better categorization
-  
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Missing or invalid token" });
-  }
+/**
+ * Top Artists Graph route - Fetches and processes user's top artists
+ */
+app.get('/top-artists-graph', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
 
-  const access_token = authHeader.split(" ")[1];
-
-  const options = {
-    url: "https://api.spotify.com/v1/me/top/artists?limit=50",
-    headers: { Authorization: `Bearer ${access_token}` },
-    json: true,
-  };
-
-  request.get(options, (error, response, body) => {
-    if (error) {
-      console.error("Request error:", error);
-      return res.status(500).json({ error: "Network error occurred" });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid authorization token' });
     }
 
-    if (response.statusCode !== 200) {
-      console.error("Spotify API error:", response.statusCode, body);
-      return res.status(response.statusCode).json({
-        error: body?.error?.message || "Failed to fetch top artists",
-      });
+    const accessToken = authHeader.split(' ')[1];
+
+    if (!accessToken) {
+      return res.status(401).json({ error: 'Missing access token' });
     }
 
-    if (!body || !Array.isArray(body.items)) {
-      console.error("Unexpected API response:", body);
-      return res.status(500).json({ error: "Unexpected API response structure" });
+    // Fetch top artists from Spotify
+    const artists = await getTopArtists(accessToken);
+
+    if (!Array.isArray(artists) || artists.length === 0) {
+      return res.status(404).json({ error: 'No artists found' });
     }
 
-    const artists = body.items.map((artist) => ({
+    // Transform artist data
+    const transformedArtists = artists.map((artist) => ({
       id: artist.id,
       name: artist.name,
       popularity: artist.popularity,
       genres: artist.genres || [],
-      img: artist.images?.[0]?.url || null,
+      images: artist.images || [],
     }));
 
-    const genreFrequency = {};
-    artists.forEach((artist) => {
-      artist.genres.forEach((genre) => {
-        const parent = genreMap[genre.toLowerCase()] || genre.toLowerCase(); // use original genre if not mapped
-        genreFrequency[parent] = (genreFrequency[parent] || 0) + 1;
-      });
-    });
+    // Calculate genre frequency
+    const genreFrequency = calculateGenreFrequency(transformedArtists);
 
-    // remove genreMap usage entirely
-    const filteredArtists = artists.map((artist) => {
-      return {
-        ...artist,
-        genres: artist.genres, // keep all genres as they come from Spotify, no mapping
-      };
-    });
+    // Create links between artists
+    const allLinks = createArtistLinks(transformedArtists);
 
+    // Filter links to limit connections per node
+    const filteredLinks = filterLinks(allLinks);
 
-
-    let links = [];
-    for (let i = 0; i < filteredArtists.length; i++) {
-      for (let j = i + 1; j < filteredArtists.length; j++) {
-        const sharedGenres = filteredArtists[i].genres.filter((g) =>
-          filteredArtists[j].genres.includes(g)
-        );
-        if (sharedGenres.length > 0) {
-          links.push({
-            source: filteredArtists[i].id,
-            target: filteredArtists[j].id,
-            weight: sharedGenres.length,
-          });
-        }
-      }
-    }
-
-    const maxLinksPerNode = 10;
-    const linksBySource = {};
-    links.forEach((link) => {
-      if (!linksBySource[link.source]) linksBySource[link.source] = [];
-      linksBySource[link.source].push(link);
-    });
-
-    const filteredLinks = [];
-    Object.values(linksBySource).forEach((linkArray) => {
-      linkArray
-        .sort((a, b) => b.weight - a.weight)
-        .slice(0, maxLinksPerNode)
-        .forEach((link) => filteredLinks.push(link));
-    });
-
-        // Get set of connected artist IDs
+    // Get set of connected artist IDs
     const connectedIds = new Set();
-    filteredLinks.forEach(link => {
+    filteredLinks.forEach((link) => {
       connectedIds.add(link.source);
       connectedIds.add(link.target);
     });
 
-    // Only include nodes that are connected
-    const nodes = filteredArtists
-      .filter((artist) => connectedIds.has(artist.id))
-      .map((artist) => {
-        // Find the genre with the highest frequency from genreFrequency
-        let topGenre = "Other";
-        let maxCount = 0;
-        artist.genres.forEach((g) => {
-          const count = genreFrequency[g] || 0;
-          if (count > maxCount) {
-            maxCount = count;
-            topGenre = g;
-          }
-        });
-        return {
-          id: artist.id,
-          name: artist.name,
-          val: artist.popularity,
-          img: artist.img,
-          genre: artist.genres[0] || "Other",
-          genres: artist.genres, // keep all genres here
-        };
-      });
-
-
+    // Create graph nodes (only include connected artists)
+    const nodes = createGraphNodes(transformedArtists, genreFrequency, connectedIds);
 
     res.json({ nodes, links: filteredLinks });
+  } catch (error) {
+    console.error('Top artists graph error:', error.message);
+    
+    if (error.message.includes('401')) {
+      return res.status(401).json({ error: 'Invalid or expired access token' });
+    }
+
+    res.status(500).json({
+      error: 'Failed to fetch top artists graph',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Health check route
+ */
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+/**
+ * Error handling middleware
+ */
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: config.nodeEnv === 'development' ? err.message : 'An unexpected error occurred',
   });
 });
 
+/**
+ * 404 handler
+ */
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
 // Start server
-app.listen(8888, () => {
-  console.log("Server listening on port 8888");
+const PORT = config.port;
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+  console.log(`Environment: ${config.nodeEnv}`);
+  console.log(`Frontend URL: ${config.frontendUri}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT signal received: closing HTTP server');
+  process.exit(0);
 });
