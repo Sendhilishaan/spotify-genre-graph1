@@ -2,6 +2,8 @@
 
 A visualization tool that creates an interactive graph of your top Spotify artists based on shared genres. Built with React and Node.js.
 
+![demo image](images/image.png)
+
 ## Features
 
 - Spotify OAuth authentication
